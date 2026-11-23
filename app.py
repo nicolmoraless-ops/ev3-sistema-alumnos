@@ -24,6 +24,22 @@ app = Flask(__name__)
 ## Clave de la aplicación: se lee del entorno y, si no existe, se genera una aleatoria al iniciar.
 ## (VULN-01: antes estaba escrita en el código fuente y publicada en el repositorio.)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+## VULN-07: la cookie de sesión no es accesible desde JavaScript y no se envía desde otros sitios.
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Strict")
+
+## VULN-07: cabeceras de seguridad que se agregan a todas las respuestas.
+CABECERAS_SEGURIDAD = {
+    "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'; form-action 'self'; "
+                               "base-uri 'none'; object-src 'none'",
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Embedder-Policy": "require-corp",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Cache-Control": "no-store",
+}
 
 ## Credenciales del administrador: el usuario y el HASH de la clave vienen del entorno.
 ## El hash se genera con werkzeug.security.generate_password_hash (scrypt/pbkdf2 con sal),
@@ -182,6 +198,8 @@ def despues_de_la_peticion(respuesta):
     if endpoint != "/metrics":
         HTTP_PETICIONES.labels(request.method, endpoint, str(respuesta.status_code)).inc()
         HTTP_LATENCIA.labels(endpoint).observe(time.perf_counter() - g.get("inicio", time.perf_counter()))
+    for cabecera, valor in CABECERAS_SEGURIDAD.items():
+        respuesta.headers.setdefault(cabecera, valor)
     return respuesta
 
 
@@ -286,7 +304,7 @@ def login():
         return jsonify({"mensaje": "Bienvenido, administrador"})
     LOGIN_FALLIDOS.inc()
     registrar_fallido(request.remote_addr)
-    app.logger.warning("Login fallido para el usuario '%s' desde %s", usuario, request.remote_addr)
+    app.logger.warning("Login fallido para el usuario %r desde %s", usuario[:50], request.remote_addr)
     return jsonify({"error": "Credenciales inválidas"}), 401
 
 
