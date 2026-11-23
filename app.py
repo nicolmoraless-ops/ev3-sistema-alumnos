@@ -7,10 +7,12 @@ Las métricas de seguridad (logins fallidos y peticiones sospechosas) se ven en 
 """
 import hmac
 import os
+import threading
 import re
 import secrets
 import sqlite3
 import time
+from collections import defaultdict, deque
 
 from flask import Flask, Response, abort, g, jsonify, render_template_string, request, session
 from markupsafe import escape
@@ -49,6 +51,36 @@ LOGIN_EXITOSOS = Counter("login_exitosos_total", "Inicios de sesión correctos")
 SOSPECHOSAS = Counter("peticiones_sospechosas_total", "Peticiones con patrones de ataque", ["tipo"])
 APP_INFO = Gauge("app_info", "Versión desplegada de la aplicación", ["version"])
 APP_INFO.labels(version=VERSION).set(1)
+
+## VULN-06: límite de intentos fallidos de login por IP (protección contra fuerza bruta).
+MAX_FALLIDOS = int(os.environ.get("LOGIN_MAX_FALLIDOS", "5"))
+VENTANA_S = int(os.environ.get("LOGIN_VENTANA_S", "300"))
+_fallidos_por_ip = defaultdict(deque)
+_candado = threading.Lock()
+
+
+def bloqueado(ip):
+    """!
+    @brief Indica si la IP superó el máximo de logins fallidos en la ventana de tiempo.
+    @param ip Dirección IP del cliente.
+    @return True si debe rechazarse con HTTP 429.
+    """
+    ahora = time.monotonic()
+    with _candado:
+        intentos = _fallidos_por_ip[ip]
+        while intentos and ahora - intentos[0] > VENTANA_S:
+            intentos.popleft()
+        return len(intentos) >= MAX_FALLIDOS
+
+
+def registrar_fallido(ip):
+    """!
+    @brief Registra un login fallido de la IP.
+    @param ip Dirección IP del cliente.
+    """
+    with _candado:
+        _fallidos_por_ip[ip].append(time.monotonic())
+
 
 ## Patrones que delatan un intento de ataque (detección, no bloqueo).
 PATRONES_ATAQUE = {
@@ -236,6 +268,10 @@ def login():
     @brief Valida las credenciales del administrador enviadas por formulario.
     @return JSON con el resultado; 401 si las credenciales no son válidas.
     """
+    if bloqueado(request.remote_addr):
+        LOGIN_FALLIDOS.inc()
+        app.logger.warning("Login bloqueado por exceso de intentos desde %s", request.remote_addr)
+        return jsonify({"error": "Demasiados intentos. Intenta más tarde."}), 429
     # VULN-05: el formulario debe traer el token anti-CSRF de la sesión.
     enviado = request.form.get("csrf_token", "")
     esperado = session.get("csrf_token", "")
@@ -249,6 +285,7 @@ def login():
         LOGIN_EXITOSOS.inc()
         return jsonify({"mensaje": "Bienvenido, administrador"})
     LOGIN_FALLIDOS.inc()
+    registrar_fallido(request.remote_addr)
     app.logger.warning("Login fallido para el usuario '%s' desde %s", usuario, request.remote_addr)
     return jsonify({"error": "Credenciales inválidas"}), 401
 
