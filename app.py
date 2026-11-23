@@ -249,4 +249,6 @@ def metrics():
 iniciar_db()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # VULN-04: sin depurador de Werkzeug y solo en localhost para uso local.
+    # En los despliegues la app corre con gunicorn (scripts/deploy.sh), no con app.run().
+    app.run(host="127.0.0.1", port=5000, debug=False)
