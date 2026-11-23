@@ -208,11 +208,12 @@ def buscar_alumnos():
     @return JSON con los alumnos encontrados.
     """
     nombre = request.args.get("nombre", "")
-    consulta = f"SELECT * FROM alumnos WHERE nombre LIKE '%{nombre}%'"
+    # VULN-02: consulta parametrizada; el valor nunca se concatena al SQL.
     try:
-        filas = conectar().execute(consulta).fetchall()
-    except sqlite3.Error as error:
-        return jsonify({"error": str(error), "consulta": consulta}), 500
+        filas = conectar().execute("SELECT * FROM alumnos WHERE nombre LIKE ?", (f"%{nombre}%",)).fetchall()
+    except sqlite3.Error:
+        app.logger.exception("Error de base de datos en /alumnos/buscar")
+        return jsonify({"error": "Error interno"}), 500
     return jsonify([dict(f) for f in filas])
 
 
