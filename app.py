@@ -12,7 +12,7 @@ import secrets
 import sqlite3
 import time
 
-from flask import Flask, Response, g, jsonify, render_template_string, request
+from flask import Flask, Response, abort, g, jsonify, render_template_string, request, session
 from markupsafe import escape
 from werkzeug.security import check_password_hash
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -74,11 +74,22 @@ PORTADA = """<!doctype html>
 </form>
 <h2>Acceso administrador</h2>
 <form action="/login" method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input name="usuario" value="admin"> <input name="clave" type="password" value="">
   <button type="submit">Entrar</button>
 </form>
 </body>
 </html>"""
+
+
+def token_csrf():
+    """!
+    @brief Devuelve el token anti-CSRF de la sesión (lo crea si no existe).
+    @return Token aleatorio de 32 bytes en hexadecimal.
+    """
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_hex(32)
+    return session["csrf_token"]
 
 
 def conectar():
@@ -148,7 +159,7 @@ def portada():
     @brief Portada HTML con enlaces y formularios del sistema.
     @return Página HTML.
     """
-    return render_template_string(PORTADA, version=VERSION)
+    return render_template_string(PORTADA, version=VERSION, csrf_token=token_csrf())
 
 
 @app.route("/hello")
@@ -225,6 +236,11 @@ def login():
     @brief Valida las credenciales del administrador enviadas por formulario.
     @return JSON con el resultado; 401 si las credenciales no son válidas.
     """
+    # VULN-05: el formulario debe traer el token anti-CSRF de la sesión.
+    enviado = request.form.get("csrf_token", "")
+    esperado = session.get("csrf_token", "")
+    if not esperado or not hmac.compare_digest(enviado, esperado):
+        abort(400, description="Token CSRF inválido")
     usuario = request.form.get("usuario", "")
     clave = request.form.get("clave", "")
     usuario_ok = hmac.compare_digest(usuario.encode(), ADMIN_USUARIO.encode())
