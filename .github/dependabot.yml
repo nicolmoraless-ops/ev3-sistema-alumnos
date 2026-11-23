@@ -1,0 +1,15 @@
+# Dependabot: revisa a diario las dependencias de Python (requirements.txt y requirements-dev.txt)
+# y abre un Pull Request por cada actualización disponible. Cada PR fusionado dispara un build
+# en Jenkins, cuya etapa "Dependency Management" (pip-audit) verifica que no haya CVE conocidas.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "security"
+    commit-message:
+      prefix: "deps"

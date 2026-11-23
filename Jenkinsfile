@@ -49,12 +49,59 @@ pipeline {
             }
         }
 
-        // >>> [SEGURIDAD]: aquí van las etapas "Security Review (SAST)" y "Dependency Management"
+        // ---------------------------------------------------------------- [SEGURIDAD]
+        // Análisis estático del código (SAST). Si hay hallazgos Medium o High el build queda
+        // UNSTABLE y el gate de más abajo impide desplegar en producción.
+        stage('Security Review (SAST)') {
+            steps {
+                sh 'bandit -f json -o reports/bandit.json app.py || true'
+                sh 'bandit -f txt -o reports/bandit.txt app.py || true'
+                catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
+                    sh 'bandit -q -ll app.py'
+                }
+            }
+        }
 
-        // >>> [ZAP]: aquí van las etapas "Deploy Staging" y "DAST - OWASP ZAP"
+        // Análisis de dependencias (SCA): busca CVE conocidas en requirements.txt.
+        // Dependabot (.github/dependabot.yml) propone las actualizaciones; esta etapa verifica
+        // que cada actualización fusionada no deje vulnerabilidades conocidas.
+        stage('Dependency Management') {
+            steps {
+                sh 'pip-audit -r requirements.txt --progress-spinner off -f json -o reports/pip-audit.json || true'
+                catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
+                    sh '''
+                        pip-audit -r requirements.txt --progress-spinner off > reports/pip-audit.txt 2>&1
+                        rc=$?
+                        cat reports/pip-audit.txt
+                        exit $rc
+                    '''
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------- [ZAP]
+        stage('Deploy Staging') {
+            steps {
+                sh 'bash scripts/deploy.sh staging 5001'
+            }
+        }
+
+        // Pruebas dinámicas (DAST) con OWASP ZAP sobre staging: spider, escaneo pasivo y activo.
+        // Alertas High o Medium -> UNSTABLE (no se despliega en producción).
+        stage('DAST - OWASP ZAP') {
+            steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'UNSTABLE') {
+                    sh 'python3 scripts/zap_scan.py http://jenkins:5001'
+                }
+            }
+        }
 
         stage('Deploy Producción') {
-            // >>> [GATE]: aquí va la condición "when" que protege producción
+            // ------------------------------------------------------------ [GATE]
+            // Solo se despliega si todas las etapas anteriores terminaron sin hallazgos.
+            when {
+                expression { currentBuild.currentResult == 'SUCCESS' }
+            }
             steps {
                 sh 'bash scripts/deploy.sh produccion 5000'
                 script { env.PRODUCCION = env.APP_VERSION }
